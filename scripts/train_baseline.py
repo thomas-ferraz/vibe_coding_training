@@ -29,7 +29,7 @@ def parse_args():
     p.add_argument("--data", type=str, default="data/patients.csv",
                    help="path to patients.csv")
     p.add_argument("--test-size", type=float, default=0.2)
-    p.add_argument("--cv-folds", type=str, default="5",
+    p.add_argument("--cv-folds", type=int, default=5,
                    help="number of CV folds")
     p.add_argument("--random-state", type=int, default=42)
     return p.parse_args()
