@@ -35,5 +35,11 @@ Run the baseline training script from the project root:
 python -m scripts.train_baseline --data data/patients.csv --cv-folds 5
 ```
 
+You can also run the script directly:
+
+```bash
+python scripts/train_baseline.py --data data/patients.csv --cv-folds 5
+```
+
 This loads `data/patients.csv`, trains the baseline readmission model, prints
 test metrics, and runs 5-fold cross-validation.
