@@ -17,6 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from src.ml_utils import (
     load_and_clean,
@@ -24,7 +26,6 @@ from src.ml_utils import (
     encode_categoricals,
     build_feature_matrix,
     train_test_split_by_patient,
-    scale_features,
     evaluate_model,
     cross_validate_model,
 )
@@ -45,26 +46,36 @@ def main():
     args = parse_args()
 
     df = load_and_clean(args.data)
-    df = impute_numerics(df)
-    df = encode_categoricals(df)
-
     train_df, test_df = train_test_split_by_patient(
         df, test_size=args.test_size, random_state=args.random_state
     )
+    train_groups = train_df["patient_id"].copy()
+
+    train_df, numeric_imputer = impute_numerics(train_df, return_imputer=True)
+    test_df = impute_numerics(test_df, imputer=numeric_imputer)
+
+    train_df, category_levels = encode_categoricals(train_df, return_levels=True)
+    test_df = encode_categoricals(test_df, category_levels=category_levels)
 
     X_train, y_train = build_feature_matrix(train_df)
     X_test, y_test = build_feature_matrix(test_df)
+    X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
 
-    X_train_s, X_test_s, _ = scale_features(X_train, X_test)
+    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=500))
+    model.fit(X_train, y_train)
 
-    model = LogisticRegression(max_iter=500)
-    model.fit(X_train_s, y_train)
-
-    metrics = evaluate_model(model, X_test_s, y_test)
+    metrics = evaluate_model(model, X_test, y_test)
     print("test metrics:", {k: v for k, v in metrics.items() if k != "confusion_matrix"})
 
     # cross-val
-    cv_res = cross_validate_model(model, X_train_s, y_train, cv=args.cv_folds)
+    cv_res = cross_validate_model(
+        model,
+        X_train,
+        y_train,
+        cv=args.cv_folds,
+        groups=train_groups,
+        random_state=args.random_state,
+    )
     print("cv:", json.dumps(cv_res, default=str))
 
 

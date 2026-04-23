@@ -8,19 +8,22 @@ Used from the exploration notebook and from scripts/train_baseline.py.
 Author: someone on the team, a while ago
 """
 
-import os
-import warnings
 import numpy as np
 import pandas as pd
+from pandas.api.types import CategoricalDtype
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.model_selection import (
+    GroupShuffleSplit,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    cross_val_score,
+)
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score,
     roc_auc_score,
     confusion_matrix,
 )
-import matplotlib.pyplot as plt
 
 
 DEFAULT_NUMERIC_COLS = [
@@ -37,6 +40,32 @@ DEFAULT_CATEGORICAL_COLS = [
     "diagnosis_code",
     "hospital_id",
 ]
+
+
+def _parse_mixed_admission_dates(date_series):
+    """Parse supported admission date formats and fail on invalid values."""
+    date_text = date_series.astype("string").str.strip()
+    iso_mask = date_text.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+    slash_mask = date_text.str.fullmatch(r"\d{2}/\d{2}/\d{4}", na=False)
+
+    parsed_dates = pd.Series(pd.NaT, index=date_series.index, dtype="datetime64[ns]")
+    parsed_dates.loc[iso_mask] = pd.to_datetime(
+        date_text.loc[iso_mask], format="%Y-%m-%d", errors="coerce"
+    )
+    parsed_dates.loc[slash_mask] = pd.to_datetime(
+        date_text.loc[slash_mask], format="%d/%m/%Y", errors="coerce"
+    )
+
+    invalid_mask = parsed_dates.isna()
+    if invalid_mask.any():
+        examples = date_series.loc[invalid_mask].head(5).tolist()
+        raise ValueError(
+            "Failed to parse admission_date values. "
+            "Expected YYYY-MM-DD or DD/MM/YYYY. "
+            f"Examples: {examples}"
+        )
+
+    return parsed_dates
 
 
 def load_and_clean(path):
@@ -60,22 +89,29 @@ def load_and_clean(path):
     # normalise column names just in case
     df.columns = [c.strip() for c in df.columns]
 
-    # parse dates — csv has mixed formats, coerce handles everything
-    df["admission_date"] = pd.to_datetime(df["admission_date"], errors="coerce")
+    required_cols = {"admission_date", "readmission_30d"}
+    missing_cols = required_cols.difference(df.columns)
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {sorted(missing_cols)}")
+
+    df["admission_date"] = _parse_mixed_admission_dates(df["admission_date"])
 
     # drop rows with no target
     df = df[df["readmission_30d"].notna()].copy()
     df["readmission_30d"] = df["readmission_30d"].astype(int)
+    if not df["readmission_30d"].isin([0, 1]).all():
+        raise ValueError("readmission_30d must contain only 0/1 values.")
 
     return df
 
 
-def impute_numerics(df, cols=None):
+def impute_numerics(df, cols=None, imputer=None, return_imputer=False):
     """
     Impute missing values in the given numeric columns using the median.
 
     Returns a copy of the dataframe with imputed values; the original
-    frame is not modified.
+    frame is not modified. If an imputer is provided, it is used in
+    transform-only mode.
 
     Parameters
     ----------
@@ -86,12 +122,23 @@ def impute_numerics(df, cols=None):
     if cols is None:
         cols = DEFAULT_NUMERIC_COLS
 
-    imputer = SimpleImputer(strategy="median")
-    df[cols] = imputer.fit_transform(df[cols])
-    return df
+    missing_cols = [c for c in cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing numeric columns: {missing_cols}")
+
+    out = df.copy()
+    fitted_imputer = imputer or SimpleImputer(strategy="median")
+    if imputer is None:
+        out[cols] = fitted_imputer.fit_transform(out[cols])
+    else:
+        out[cols] = fitted_imputer.transform(out[cols])
+
+    if return_imputer:
+        return out, fitted_imputer
+    return out
 
 
-def encode_categoricals(df, cols=None):
+def encode_categoricals(df, cols=None, category_levels=None, return_levels=False):
     """
     One-hot encode the categorical columns and return a new frame.
 
@@ -107,13 +154,37 @@ def encode_categoricals(df, cols=None):
     if cols is None:
         cols = DEFAULT_CATEGORICAL_COLS
 
-    # Make sure categoricals are strings (NaN -> 'nan' string so dummies don't explode)
-    for c in cols:
-        df[c] = df[c].astype(str)
+    missing_cols = [c for c in cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing categorical columns: {missing_cols}")
 
-    dummies = pd.get_dummies(df[cols], prefix=cols)
-    out = pd.concat([df.drop(columns=cols), dummies], axis=1)
-    return out
+    out = df.copy()
+    encoded_parts = []
+    fitted_levels = {}
+
+    for col in cols:
+        values = out[col].astype("string").fillna("__MISSING__")
+
+        if category_levels is None:
+            levels = sorted(values.unique().tolist())
+        else:
+            levels = list(category_levels[col])
+
+        fitted_levels[col] = levels
+        categorical = pd.Series(
+            pd.Categorical(values, categories=levels, ordered=False),
+            index=out.index,
+            name=col,
+            dtype=CategoricalDtype(categories=levels),
+        )
+        encoded_parts.append(pd.get_dummies(categorical, prefix=col))
+
+    encoded = pd.concat(encoded_parts, axis=1)
+    result = pd.concat([out.drop(columns=cols), encoded], axis=1)
+
+    if return_levels:
+        return result, fitted_levels
+    return result
 
 
 def train_test_split_by_patient(df, test_size=0.2, random_state=42):
@@ -132,11 +203,15 @@ def train_test_split_by_patient(df, test_size=0.2, random_state=42):
     -------
     (train_df, test_df)
     """
-    train_df, test_df = train_test_split(
-        df,
-        test_size=test_size,
-        random_state=random_state,
+    if "patient_id" not in df.columns:
+        raise ValueError("DataFrame must contain a 'patient_id' column.")
+
+    splitter = GroupShuffleSplit(
+        n_splits=1, test_size=test_size, random_state=random_state
     )
+    train_idx, test_idx = next(splitter.split(df, groups=df["patient_id"]))
+    train_df = df.iloc[train_idx].copy()
+    test_df = df.iloc[test_idx].copy()
     return train_df, test_df
 
 
@@ -185,8 +260,15 @@ def evaluate_model(model, X_test, y_test):
     """
     y_pred = model.predict(X_test)
 
+    if hasattr(model, "predict_proba"):
+        y_score = model.predict_proba(X_test)[:, 1]
+    elif hasattr(model, "decision_function"):
+        y_score = model.decision_function(X_test)
+    else:
+        y_score = y_pred
+
     acc = accuracy_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, y_pred)
+    auc = roc_auc_score(y_test, y_score)
 
     cm = confusion_matrix(y_test, y_pred)
 
@@ -203,7 +285,20 @@ def plot_feature_importance(model, feature_names, top_n=15, figsize=(8, 6)):
 
     Works with tree-based models and linear models.
     """
-    importances = model.feature_importances_
+    import matplotlib.pyplot as plt
+
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+    elif hasattr(model, "coef_"):
+        importances = np.abs(np.ravel(model.coef_))
+    else:
+        raise ValueError(
+            "Model must expose either feature_importances_ or coef_."
+        )
+
+    if len(feature_names) != len(importances):
+        raise ValueError("feature_names length must match the number of features.")
+
     order = np.argsort(importances)[::-1][:top_n]
 
     plt.figure(figsize=figsize)
@@ -215,7 +310,7 @@ def plot_feature_importance(model, feature_names, top_n=15, figsize=(8, 6)):
     return plt.gca()
 
 
-def cross_validate_model(model, X, y, cv=5, scoring="roc_auc"):
+def cross_validate_model(model, X, y, cv=5, scoring="roc_auc", groups=None, random_state=42):
     """
     Run k-fold cross validation and return the list of fold scores
     plus the mean.
@@ -233,8 +328,18 @@ def cross_validate_model(model, X, y, cv=5, scoring="roc_auc"):
     -------
     dict with keys `fold_scores` and `mean_score`.
     """
-    kf = KFold(n_splits=cv)
-    scores = cross_val_score(model, X, y, cv=kf, scoring=scoring)
+    if groups is not None:
+        splitter = StratifiedGroupKFold(
+            n_splits=cv, shuffle=True, random_state=random_state
+        )
+        scores = cross_val_score(
+            model, X, y, cv=splitter, groups=groups, scoring=scoring
+        )
+    else:
+        splitter = StratifiedKFold(
+            n_splits=cv, shuffle=True, random_state=random_state
+        )
+        scores = cross_val_score(model, X, y, cv=splitter, scoring=scoring)
     return {
         "fold_scores": list(scores),
         "mean_score": float(np.mean(scores)),
