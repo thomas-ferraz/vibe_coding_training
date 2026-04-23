@@ -8,6 +8,8 @@ Used from the exploration notebook and from scripts/train_baseline.py.
 Author: someone on the team, a while ago
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from pandas.api.types import CategoricalDtype
@@ -72,8 +74,9 @@ def load_and_clean(path):
     """
     Load the patients CSV and return a cleaned DataFrame.
 
-    Parses `admission_date` to a proper datetime column and drops
-    obviously malformed rows. Safe to call multiple times.
+    Parses `admission_date` to a proper datetime column, validates required
+    columns, drops rows with missing target values, and enforces a binary
+    `readmission_30d` column.
 
     Parameters
     ----------
@@ -118,6 +121,10 @@ def impute_numerics(df, cols=None, imputer=None, return_imputer=False):
     df : pd.DataFrame
     cols : list[str] or None
         Columns to impute. Defaults to the standard numeric list.
+    imputer : sklearn.impute.SimpleImputer or None
+        Previously fitted imputer. If omitted, a new median imputer is fit.
+    return_imputer : bool
+        When True, also return the fitted imputer.
     """
     if cols is None:
         cols = DEFAULT_NUMERIC_COLS
@@ -146,6 +153,11 @@ def encode_categoricals(df, cols=None, category_levels=None, return_levels=False
     ----------
     df : pd.DataFrame
     cols : list[str] or None
+    category_levels : dict[str, list[str]] or None
+        Pre-fitted categorical levels to enforce. If omitted, levels are learned
+        from the provided dataframe.
+    return_levels : bool
+        When True, also return the fitted category levels.
 
     Returns
     -------
@@ -218,25 +230,47 @@ def train_test_split_by_patient(df, test_size=0.2, random_state=42):
 def build_feature_matrix(df, target_col="readmission_30d"):
     """
     Separate features and target. Drops non-feature columns such as
-    `patient_id` and `admission_date`.
+    `patient_id` and `admission_date`, and requires the remaining feature set
+    to be fully numeric or boolean.
     """
+    if target_col not in df.columns:
+        raise ValueError(f"Target column '{target_col}' is missing.")
+
     drop_cols = [target_col, "patient_id", "admission_date"]
     drop_cols = [c for c in drop_cols if c in df.columns]
     X = df.drop(columns=drop_cols)
     y = df[target_col].astype(int)
-    # Keep only numeric columns (after encoding, everything should be numeric)
-    X = X.select_dtypes(include=[np.number, "bool"])
+
+    non_numeric_cols = X.select_dtypes(exclude=[np.number, "bool"]).columns.tolist()
+    if non_numeric_cols:
+        raise ValueError(
+            "Feature matrix contains non-numeric columns that were not encoded: "
+            f"{non_numeric_cols}"
+        )
     return X, y
 
 
 def scale_features(X_train, X_test=None):
     """
-    Fit a StandardScaler on X_train and transform both sets.
+    Fit a StandardScaler on X_train and transform both sets while preserving
+    dataframe indexes and column names when available.
     """
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
+    train_columns = getattr(X_train, "columns", None)
+    train_index = getattr(X_train, "index", None)
+    if train_columns is not None:
+        X_train_scaled = pd.DataFrame(
+            X_train_scaled, columns=train_columns, index=train_index
+        )
     if X_test is not None:
         X_test_scaled = scaler.transform(X_test)
+        test_columns = getattr(X_test, "columns", None)
+        test_index = getattr(X_test, "index", None)
+        if test_columns is not None:
+            X_test_scaled = pd.DataFrame(
+                X_test_scaled, columns=test_columns, index=test_index
+            )
         return X_train_scaled, X_test_scaled, scaler
     return X_train_scaled, scaler
 
@@ -268,7 +302,10 @@ def evaluate_model(model, X_test, y_test):
         y_score = y_pred
 
     acc = accuracy_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, y_score)
+    if pd.Series(y_test).nunique(dropna=False) < 2:
+        auc = np.nan
+    else:
+        auc = roc_auc_score(y_test, y_score)
 
     cm = confusion_matrix(y_test, y_pred)
 
@@ -323,6 +360,11 @@ def cross_validate_model(model, X, y, cv=5, scoring="roc_auc", groups=None, rand
     cv : int
         Number of folds (default 5).
     scoring : str
+    groups : array-like or None
+        Optional grouping labels. When provided, grouped stratified folds are
+        used to avoid leaking groups across folds.
+    random_state : int
+        Seed used when shuffling folds.
 
     Returns
     -------
@@ -348,24 +390,28 @@ def cross_validate_model(model, X, y, cv=5, scoring="roc_auc", groups=None, rand
 
 def summarize_dataframe(df):
     """
-    Quick summary helpful for EDA. Prints shape, dtypes, missing counts.
+    Quick summary helpful for EDA.
+
+    Returns a dictionary containing shape, dtypes, and missing counts so the
+    caller can print or log it as needed.
     """
-    print("shape:", df.shape)
-    print("dtypes:")
-    print(df.dtypes)
-    print("missing per column:")
-    print(df.isna().sum())
-    return None
+    return {
+        "shape": df.shape,
+        "dtypes": df.dtypes,
+        "missing_per_column": df.isna().sum(),
+    }
 
 
 def basic_sanity_check(df):
     """
-    A few cheap sanity checks on the dataframe. Raises on obvious issues.
+    A few cheap sanity checks on the dataframe.
     """
-    assert "readmission_30d" in df.columns, "target column missing"
-    assert df["readmission_30d"].isin([0, 1]).all(), "target not binary"
+    if "readmission_30d" not in df.columns:
+        raise ValueError("target column missing")
+    if not df["readmission_30d"].isin([0, 1]).all():
+        raise ValueError("target not binary")
     if "bmi" in df.columns:
         # don't be too strict about outliers here, just a heads-up
         if (df["bmi"] < 10).any() or (df["bmi"] > 80).any():
-            print("warning: implausible BMI values present")
+            warnings.warn("implausible BMI values present", stacklevel=2)
     return True
