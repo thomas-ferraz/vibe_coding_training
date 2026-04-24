@@ -1,10 +1,16 @@
 """Preprocessing helpers for patient readmission modeling."""
 
+import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
+
+
+def normalize_missing_categoricals(frame: pd.DataFrame) -> pd.DataFrame:
+    """Convert pandas missing scalars to numpy nan for sklearn compatibility."""
+    return frame.replace({pd.NA: np.nan})
 
 
 def clean_bmi(df: pd.DataFrame) -> pd.DataFrame:
@@ -94,6 +100,14 @@ def build_preprocessor(
     )
     categorical_transformer = Pipeline(
         steps=[
+            (
+                "normalize_missing",
+                FunctionTransformer(
+                    normalize_missing_categoricals,
+                    validate=False,
+                    feature_names_out="one-to-one",
+                ),
+            ),
             ("imputer", SimpleImputer(strategy="most_frequent")),
             ("onehot", OneHotEncoder(handle_unknown="ignore")),
         ]
