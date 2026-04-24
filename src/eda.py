@@ -200,3 +200,12 @@ def plot_target_rate_by(df: pd.DataFrame, col: str) -> None:
     ax.set_ylim(0, 1)
     plt.tight_layout()
     plt.show()
+
+
+def summarize_dataframe(df: pd.DataFrame) -> dict[str, object]:
+    """Return a compact structured summary of a dataframe."""
+    return {
+        "shape": df.shape,
+        "dtypes": df.dtypes,
+        "missing_per_column": df.isna().sum(),
+    }

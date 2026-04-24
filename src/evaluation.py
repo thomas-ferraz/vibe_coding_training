@@ -75,3 +75,30 @@ def plot_confusion_matrix(
     ax.set_title(title)
     plt.tight_layout()
     plt.show()
+
+
+def plot_feature_importance(
+    model,
+    feature_names: list[str],
+    top_n: int = 15,
+    figsize: tuple[int, int] = (8, 6),
+):
+    """Plot the top absolute feature importances for a fitted model."""
+    if hasattr(model, "feature_importances_"):
+        importances = model.feature_importances_
+    elif hasattr(model, "coef_"):
+        importances = np.abs(np.ravel(model.coef_))
+    else:
+        raise ValueError("Model must expose either feature_importances_ or coef_.")
+
+    if len(feature_names) != len(importances):
+        raise ValueError("feature_names length must match the number of features.")
+
+    order = np.argsort(importances)[::-1][:top_n]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(range(len(order)), importances[order][::-1])
+    ax.set_yticks(range(len(order)), [feature_names[i] for i in order][::-1])
+    ax.set_xlabel("importance")
+    ax.set_title(f"Top {top_n} features")
+    plt.tight_layout()
+    return ax

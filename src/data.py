@@ -1,6 +1,7 @@
 """Data loading and splitting utilities for the patient readmission project."""
 
 from pathlib import Path
+import warnings
 
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
@@ -99,3 +100,14 @@ def split_by_patient(
     train_df = df.iloc[train_idx].copy()
     test_df = df.iloc[test_idx].copy()
     return train_df, test_df
+
+
+def basic_sanity_check(df: pd.DataFrame) -> bool:
+    """Run a few cheap dataframe sanity checks and warn on implausible BMI."""
+    if "readmission_30d" not in df.columns:
+        raise ValueError("target column missing")
+    if not df["readmission_30d"].isin([0, 1]).all():
+        raise ValueError("target not binary")
+    if "bmi" in df.columns and ((df["bmi"] < 10) | (df["bmi"] > 80)).any():
+        warnings.warn("implausible BMI values present", stacklevel=2)
+    return True
