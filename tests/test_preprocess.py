@@ -197,3 +197,44 @@ def test_regression_preprocessor_raises_when_configured_columns_are_missing(
 
     with pytest.raises(ValueError):
         preprocessor.fit(df)
+
+
+def test_preprocessor_happy_path_preserves_row_count_and_outputs_numeric_features(
+    synthetic_patient_df: pd.DataFrame,
+    feature_columns: dict[str, list[str]],
+) -> None:
+    """The shared preprocessor should emit a numeric matrix with one row per input."""
+    df = synthetic_patient_df.copy()
+    df["bmi_implausible"] = False
+    df["lab_creatinine_negative"] = False
+
+    preprocessor = build_preprocessor(
+        feature_columns["numeric"],
+        feature_columns["categorical"],
+    )
+    transformed = preprocessor.fit_transform(df[feature_columns["all"]])
+
+    assert transformed.shape[0] == len(df)
+    assert transformed.shape[1] >= len(feature_columns["numeric"])
+    assert np.issubdtype(np.asarray(transformed).dtype, np.number)
+
+
+def test_preprocessor_happy_path_exposes_expected_feature_names(
+    synthetic_patient_df: pd.DataFrame,
+    feature_columns: dict[str, list[str]],
+) -> None:
+    """Feature names should include numeric passthrough names and encoded categoricals."""
+    df = synthetic_patient_df.copy()
+    df["bmi_implausible"] = False
+    df["lab_creatinine_negative"] = False
+
+    preprocessor = build_preprocessor(
+        feature_columns["numeric"],
+        feature_columns["categorical"],
+    )
+    preprocessor.fit(df[feature_columns["all"]])
+    output_names = preprocessor.get_feature_names_out().tolist()
+
+    assert "numeric__age" in output_names
+    assert any(name.startswith("categorical__sex_") for name in output_names)
+    assert any(name.startswith("categorical__hospital_id_") for name in output_names)
