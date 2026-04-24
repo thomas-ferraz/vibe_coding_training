@@ -8,6 +8,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
 
+def normalize_missing_categoricals(frame: pd.DataFrame) -> pd.DataFrame:
+    """Convert pandas missing scalars to numpy nan for sklearn compatibility."""
+    return frame.replace({pd.NA: np.nan})
+
+
 def clean_bmi(df: pd.DataFrame) -> pd.DataFrame:
     """Flag and remove medically implausible BMI values.
 
@@ -98,7 +103,7 @@ def build_preprocessor(
             (
                 "normalize_missing",
                 FunctionTransformer(
-                    lambda frame: frame.replace({pd.NA: np.nan}),
+                    normalize_missing_categoricals,
                     validate=False,
                     feature_names_out="one-to-one",
                 ),
