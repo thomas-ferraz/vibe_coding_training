@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.model_selection import StratifiedGroupKFold
 
 from src.models import make_logistic_regression
 from src.preprocess import build_preprocessor
 from src.training import cross_validate_estimator, fit_and_evaluate
+from scripts.train_baseline import main as run_baseline
 
 
 def test_regression_fit_and_evaluate_splits_before_fitting_preprocessor(
@@ -204,3 +206,26 @@ def test_training_pipeline_happy_path_is_reproducible_for_same_seed(
     assert np.array_equal(preds_a, preds_b)
     assert result_a.evaluation.accuracy == result_b.evaluation.accuracy
     assert result_a.evaluation.roc_auc == result_b.evaluation.roc_auc
+
+
+@pytest.mark.slow
+def test_training_pipeline_end_to_end_smoke_test_on_real_csv(tmp_path) -> None:
+    """Run the baseline entrypoint on the real CSV and assert sane outputs."""
+    model_path = tmp_path / "baseline_smoke.joblib"
+
+    result = run_baseline(
+        [
+            "--data",
+            "data/patients.csv",
+            "--cv-folds",
+            "5",
+            "--random-state",
+            "42",
+            "--output-model",
+            str(model_path),
+        ]
+    )
+
+    assert set(result["metrics"]) == {"accuracy", "roc_auc"}
+    assert 0.55 < result["metrics"]["roc_auc"] < 0.90
+    assert model_path.exists()
