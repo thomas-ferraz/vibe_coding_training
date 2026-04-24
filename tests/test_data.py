@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.data import basic_sanity_check, load_and_clean
+from src.eda import summarize_dataframe
 
 
 def test_regression_importing_data_module_does_not_import_matplotlib_pyplot() -> None:
@@ -113,3 +114,14 @@ def test_regression_basic_sanity_check_warns_on_implausible_bmi(
     """Implausible BMI values should surface as machine-readable warnings."""
     with pytest.warns(UserWarning, match="implausible BMI values present"):
         assert basic_sanity_check(dirty_patient_df) is True
+
+
+def test_regression_summarize_dataframe_returns_structured_output(
+    synthetic_patient_df: pd.DataFrame,
+) -> None:
+    """EDA summary should return structured data rather than printing only."""
+    summary = summarize_dataframe(synthetic_patient_df)
+
+    assert summary["shape"] == synthetic_patient_df.shape
+    assert summary["dtypes"]["patient_id"] == synthetic_patient_df["patient_id"].dtype
+    assert summary["missing_per_column"]["patient_id"] == 0
