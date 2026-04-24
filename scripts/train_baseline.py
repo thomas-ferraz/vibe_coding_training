@@ -16,19 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-
-from src.ml_utils import (
-    load_and_clean,
-    impute_numerics,
-    encode_categoricals,
-    build_feature_matrix,
-    train_test_split_by_patient,
-    evaluate_model,
-    cross_validate_model,
-)
+from src.data import load_and_clean
+from src.models import make_logistic_regression
+from src.preprocess import build_preprocessor, clean_bmi, clean_creatinine
+from src.training import cross_validate_estimator, fit_and_evaluate
 
 
 def parse_args():
@@ -46,34 +37,44 @@ def main():
     args = parse_args()
 
     df = load_and_clean(args.data)
-    train_df, test_df = train_test_split_by_patient(
-        df, test_size=args.test_size, random_state=args.random_state
+    df = clean_creatinine(clean_bmi(df))
+
+    numeric_cols = [
+        "age",
+        "bmi",
+        "num_prior_admissions",
+        "length_of_stay",
+        "lab_sodium",
+        "lab_creatinine",
+        "bmi_implausible",
+        "lab_creatinine_negative",
+    ]
+    categorical_cols = ["sex", "diagnosis_code", "hospital_id"]
+    feature_cols = numeric_cols + categorical_cols
+    preprocessor = build_preprocessor(numeric_cols, categorical_cols)
+    estimator = make_logistic_regression(random_state=args.random_state)
+
+    training_result = fit_and_evaluate(
+        df=df,
+        feature_cols=feature_cols,
+        preprocessor=preprocessor,
+        estimator=estimator,
+        test_size=args.test_size,
+        random_state=args.random_state,
     )
-    train_groups = train_df["patient_id"].copy()
-
-    train_df, numeric_imputer = impute_numerics(train_df, return_imputer=True)
-    test_df = impute_numerics(test_df, imputer=numeric_imputer)
-
-    train_df, category_levels = encode_categoricals(train_df, return_levels=True)
-    test_df = encode_categoricals(test_df, category_levels=category_levels)
-
-    X_train, y_train = build_feature_matrix(train_df)
-    X_test, y_test = build_feature_matrix(test_df)
-    X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
-
-    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=500))
-    model.fit(X_train, y_train)
-
-    metrics = evaluate_model(model, X_test, y_test)
-    print("test metrics:", {k: v for k, v in metrics.items() if k != "confusion_matrix"})
+    metrics = {
+        "accuracy": training_result.evaluation.accuracy,
+        "roc_auc": training_result.evaluation.roc_auc,
+    }
+    print("test metrics:", metrics)
 
     # cross-val
-    cv_res = cross_validate_model(
-        model,
-        X_train,
-        y_train,
+    cv_res = cross_validate_estimator(
+        df=df,
+        feature_cols=feature_cols,
+        preprocessor=preprocessor,
+        estimator=estimator,
         cv=args.cv_folds,
-        groups=train_groups,
         random_state=args.random_state,
     )
     print("cv:", json.dumps(cv_res, default=str))
