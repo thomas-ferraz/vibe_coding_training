@@ -137,3 +137,70 @@ def test_regression_cross_validate_estimator_handles_ordered_targets_without_col
     assert len(result["fold_scores"]) == 5
     assert np.isfinite(result["fold_scores"]).all()
     assert np.isfinite(result["mean_score"])
+
+
+def test_training_pipeline_happy_path_fits_and_predicts_on_tiny_fixture(
+    synthetic_patient_df: pd.DataFrame,
+    feature_columns: dict[str, list[str]],
+) -> None:
+    """The shared pipeline should fit and predict without error on tiny data."""
+    df = synthetic_patient_df.copy()
+    df["bmi_implausible"] = False
+    df["lab_creatinine_negative"] = False
+
+    result = fit_and_evaluate(
+        df=df,
+        feature_cols=feature_columns["all"],
+        preprocessor=build_preprocessor(
+            feature_columns["numeric"],
+            feature_columns["categorical"],
+        ),
+        estimator=make_logistic_regression(random_state=42),
+        random_state=42,
+    )
+
+    predictions = result.pipeline.predict(df[feature_columns["all"]])
+    assert predictions.shape == (len(df),)
+    assert set(np.unique(predictions)).issubset({0, 1})
+    assert 0.0 <= result.evaluation.accuracy <= 1.0
+
+
+def test_training_pipeline_happy_path_is_reproducible_for_same_seed(
+    synthetic_patient_df: pd.DataFrame,
+    feature_columns: dict[str, list[str]],
+) -> None:
+    """The same seed should produce identical predictions and metrics."""
+    df = synthetic_patient_df.copy()
+    df["bmi_implausible"] = False
+    df["lab_creatinine_negative"] = False
+
+    preprocessor_a = build_preprocessor(
+        feature_columns["numeric"],
+        feature_columns["categorical"],
+    )
+    preprocessor_b = build_preprocessor(
+        feature_columns["numeric"],
+        feature_columns["categorical"],
+    )
+
+    result_a = fit_and_evaluate(
+        df=df,
+        feature_cols=feature_columns["all"],
+        preprocessor=preprocessor_a,
+        estimator=make_logistic_regression(random_state=42),
+        random_state=42,
+    )
+    result_b = fit_and_evaluate(
+        df=df,
+        feature_cols=feature_columns["all"],
+        preprocessor=preprocessor_b,
+        estimator=make_logistic_regression(random_state=42),
+        random_state=42,
+    )
+
+    preds_a = result_a.pipeline.predict(df[feature_columns["all"]])
+    preds_b = result_b.pipeline.predict(df[feature_columns["all"]])
+
+    assert np.array_equal(preds_a, preds_b)
+    assert result_a.evaluation.accuracy == result_b.evaluation.accuracy
+    assert result_a.evaluation.roc_auc == result_b.evaluation.roc_auc
